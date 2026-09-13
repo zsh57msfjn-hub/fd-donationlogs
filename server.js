@@ -290,7 +290,13 @@ app.post('/debug/discord-json-test', async (req, res) => {
       }
     );
     const text = await discordRes.text();
-    res.status(200).json({ discordStatus: discordRes.status, discordBody: text.slice(0, 300) });
+    const headersObj = {};
+    discordRes.headers.forEach((v, k) => { headersObj[k] = v; });
+    res.status(200).json({
+      discordStatus: discordRes.status,
+      discordHeaders: headersObj,
+      discordBody: text.slice(0, 2000),
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
