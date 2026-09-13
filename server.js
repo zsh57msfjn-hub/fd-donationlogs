@@ -1,33 +1,47 @@
 // Donation card server
 //
-// Receives a donation event from Roblox, generates a card image
-// (two avatars, Robux amount, "donated to"), and posts it to a
-// Discord webhook. Replaces a third-party service the game owner
-// did not control/have credentials for.
+// Receives a donation event from Roblox and generates a card image
+// (two avatars, Robux amount, "donated to"). Roblox itself posts the
+// final Discord message, pointing an embed at the image URL this
+// server hands back — Discord fetches it directly (a GET this server
+// receives), so Render's egress IP never has to POST to discord.com.
+// (Render's shared IPs have been hit by Discord/Cloudflare's error-1015
+// rate limiting on that specific pattern — see:
+// https://github.com/discord/discord-api-docs/issues/7137 — while
+// Roblox's own IP already posts to Discord fine for the other logs.)
 
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const { createCanvas, GlobalFonts, loadImage } = require('@napi-rs/canvas');
 
 const app = express();
+app.set('trust proxy', true); // behind Render's proxy, so req.protocol reports https correctly
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
 // Shared secret Roblox must send in the `x-api-key` header.
 // If left unset, the token check is skipped (NOT recommended in production —
-// set API_TOKEN as an env var on Render so randoms can't spam your webhook).
+// set API_TOKEN as an env var on Render so randoms can't spam this endpoint).
 const API_TOKEN = process.env.API_TOKEN || '';
 
-// Your Discord webhook URL. Set this as an env var on Render — never commit it.
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || '';
-
-if (!DISCORD_WEBHOOK_URL) {
-  console.warn('[startup] WARNING: DISCORD_WEBHOOK_URL is not set. /donation will fail until it is.');
-}
 if (!API_TOKEN) {
   console.warn('[startup] WARNING: API_TOKEN is not set. The /donation endpoint is UNAUTHENTICATED.');
 }
+
+// Short-lived in-memory store for generated cards. Roblox posts the returned
+// URL straight to Discord, and Discord fetches it once to cache/display it —
+// it doesn't need to live longer than that.
+const CARD_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const cardCache = new Map(); // id -> { buffer, expiresAt }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of cardCache) {
+    if (entry.expiresAt < now) cardCache.delete(id);
+  }
+}, 5 * 60 * 1000).unref();
 
 GlobalFonts.registerFromPath(path.join(__dirname, 'assets', 'ArchivoBlack-Regular.ttf'), 'Archivo Black');
 
@@ -232,27 +246,28 @@ app.post('/donation', async (req, res) => {
       amount: Amount,
     });
 
-    if (!DISCORD_WEBHOOK_URL) {
-      return res.status(500).json({ success: false, error: 'Server has no DISCORD_WEBHOOK_URL configured' });
-    }
+    const id = crypto.randomUUID();
+    cardCache.set(id, { buffer: imageBuffer, expiresAt: Date.now() + CARD_TTL_MS });
 
-    const form = new FormData();
-    form.append('content', `**${DonatorName}** donated **${formatAmount(Amount)} Robux** to **${RaiserName}**!`);
-    form.append('file', new Blob([imageBuffer], { type: 'image/png' }), 'donation.png');
+    const imageUrl = `${req.protocol}://${req.get('host')}/cards/${id}.png`;
 
-    const discordRes = await fetch(DISCORD_WEBHOOK_URL, { method: 'POST', body: form });
-
-    if (!discordRes.ok) {
-      const errText = await discordRes.text();
-      console.error('Discord post failed:', discordRes.status, errText);
-      return res.status(502).json({ success: false, error: 'Failed to post to Discord', details: errText });
-    }
-
-    res.json({ success: true });
+    res.json({
+      success: true,
+      imageUrl,
+      content: `**${DonatorName}** donated **${formatAmount(Amount)} Robux** to **${RaiserName}**!`,
+    });
   } catch (err) {
     console.error('Error handling /donation:', err);
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+app.get('/cards/:id.png', (req, res) => {
+  const entry = cardCache.get(req.params.id);
+  if (!entry) return res.status(404).send('Not found or expired');
+  res.set('Content-Type', 'image/png');
+  res.set('Cache-Control', 'public, max-age=1800');
+  res.send(entry.buffer);
 });
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
