@@ -11,7 +11,6 @@
 // Roblox's own IP already posts to Discord fine for the other logs.)
 
 const path = require('path');
-const crypto = require('crypto');
 const express = require('express');
 const { createCanvas, GlobalFonts, loadImage } = require('@napi-rs/canvas');
 
@@ -30,18 +29,14 @@ if (!API_TOKEN) {
   console.warn('[startup] WARNING: API_TOKEN is not set. The /donation endpoint is UNAUTHENTICATED.');
 }
 
-// Short-lived in-memory store for generated cards. Roblox posts the returned
-// URL straight to Discord, and Discord fetches it once to cache/display it —
-// it doesn't need to live longer than that.
-const CARD_TTL_MS = 30 * 60 * 1000; // 30 minutes
-const cardCache = new Map(); // id -> { buffer, expiresAt }
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, entry] of cardCache) {
-    if (entry.expiresAt < now) cardCache.delete(id);
-  }
-}, 5 * 60 * 1000).unref();
+// FIX: cards used to be generated once and cached in memory under a random
+// id, expiring after 30 minutes. Render's free tier spins the server down
+// after ~15 minutes idle, which wipes that in-memory cache entirely — so any
+// card Discord (or a viewer's own client) hadn't already fetched before that
+// point 404'd forever afterward ("the picture doesn't load"). The image URL
+// now encodes the donation details directly as query params instead, so the
+// card is regenerated on demand from the URL alone every time it's
+// requested — no reliance on anything surviving in server memory.
 
 GlobalFonts.registerFromPath(path.join(__dirname, 'assets', 'ArchivoBlack-Regular.ttf'), 'Archivo Black');
 
@@ -227,29 +222,16 @@ app.post('/donation', async (req, res) => {
       });
     }
 
-    const [donatorAvatarUrl, raiserAvatarUrl] = await Promise.all([
-      fetchAvatarImageUrl(DonatorId).catch((err) => {
-        console.error('donator avatar lookup failed:', err.message);
-        return null;
-      }),
-      fetchAvatarImageUrl(RaiserId).catch((err) => {
-        console.error('raiser avatar lookup failed:', err.message);
-        return null;
-      }),
-    ]);
-
-    const imageBuffer = await generateDonationCard({
+    // No rendering (or avatar lookups) happens here — just hand back a URL
+    // that /cards/donation.png will render fresh from these same params
+    // whenever it's actually requested.
+    const imageUrl = `${req.protocol}://${req.get('host')}/cards/donation.png?${new URLSearchParams({
+      donatorId: String(DonatorId),
+      raiserId: String(RaiserId),
       donatorName: DonatorName,
-      donatorAvatarUrl,
       raiserName: RaiserName,
-      raiserAvatarUrl,
-      amount: Amount,
-    });
-
-    const id = crypto.randomUUID();
-    cardCache.set(id, { buffer: imageBuffer, expiresAt: Date.now() + CARD_TTL_MS });
-
-    const imageUrl = `${req.protocol}://${req.get('host')}/cards/${id}.png`;
+      amount: String(Amount),
+    })}`;
 
     res.json({
       success: true,
@@ -262,12 +244,41 @@ app.post('/donation', async (req, res) => {
   }
 });
 
-app.get('/cards/:id.png', (req, res) => {
-  const entry = cardCache.get(req.params.id);
-  if (!entry) return res.status(404).send('Not found or expired');
-  res.set('Content-Type', 'image/png');
-  res.set('Cache-Control', 'public, max-age=1800');
-  res.send(entry.buffer);
+app.get('/cards/donation.png', async (req, res) => {
+  try {
+    const { donatorId, raiserId, donatorName, raiserName, amount } = req.query;
+    if (!donatorId || !raiserId || !donatorName || !raiserName || amount === undefined) {
+      return res.status(400).send('Missing one of donatorId, raiserId, donatorName, raiserName, amount');
+    }
+
+    const [donatorAvatarUrl, raiserAvatarUrl] = await Promise.all([
+      fetchAvatarImageUrl(donatorId).catch((err) => {
+        console.error('donator avatar lookup failed:', err.message);
+        return null;
+      }),
+      fetchAvatarImageUrl(raiserId).catch((err) => {
+        console.error('raiser avatar lookup failed:', err.message);
+        return null;
+      }),
+    ]);
+
+    const imageBuffer = await generateDonationCard({
+      donatorName,
+      donatorAvatarUrl,
+      raiserName,
+      raiserAvatarUrl,
+      amount,
+    });
+
+    res.set('Content-Type', 'image/png');
+    // Fine for a viewer/CDN to cache this for a while — the URL always
+    // regenerates the same image deterministically from its own params.
+    res.set('Cache-Control', 'public, max-age=86400, immutable');
+    res.send(imageBuffer);
+  } catch (err) {
+    console.error('Error handling /cards/donation.png:', err);
+    res.status(500).send('Failed to render card');
+  }
 });
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
