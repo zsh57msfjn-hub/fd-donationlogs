@@ -270,6 +270,32 @@ app.get('/cards/:id.png', (req, res) => {
   res.send(entry.buffer);
 });
 
+// TEMP DEBUG: probing whether Render's IP is blocked for a plain small JSON
+// post to Discord (as opposed to the multipart file-upload post that was
+// confirmed blocked earlier). Remove once we know.
+app.post('/debug/discord-json-test', async (req, res) => {
+  if (req.get('x-api-key') !== API_TOKEN) {
+    return res.status(401).json({ success: false, error: 'Invalid or missing API token' });
+  }
+  try {
+    const discordRes = await fetch(
+      'https://discord.com/api/webhooks/1535388304436891690/k2ZKNlmd-0zuyxbQDrSUmPFRTmzTFiqasA86mDKWVv8PKG5T0NRQ7Y0KCohBnQkOfQwX',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: '',
+          embeds: [{ description: 'test: plain JSON POST sent directly from Render' }],
+        }),
+      }
+    );
+    const text = await discordRes.text();
+    res.status(200).json({ discordStatus: discordRes.status, discordBody: text.slice(0, 300) });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 app.listen(PORT, () => console.log(`Donation card server listening on port ${PORT}`));
