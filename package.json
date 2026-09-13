@@ -1,0 +1,17 @@
+{
+  "name": "donation-card-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Generates a Robux donation alert card image and posts it to a Discord webhook",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.53",
+    "express": "^4.19.2"
+  }
+}
