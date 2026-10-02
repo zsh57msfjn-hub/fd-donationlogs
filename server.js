@@ -80,13 +80,10 @@ async function loadImageBuffer(url) {
 function drawCircularAvatar(ctx, image, centerX, centerY, radius) {
   ctx.save();
 
-  // Pink ring behind the avatar
-  ctx.beginPath();
-  ctx.arc(centerX, centerY, radius + CARD.ringWidth, 0, Math.PI * 2);
-  ctx.fillStyle = CARD.ringColor;
-  ctx.fill();
-
-  // Clip to circle and draw the avatar (or a placeholder if it failed to load)
+  // Clip to circle and draw the avatar (or a placeholder if it failed to load).
+  // Nothing is filled behind it, so the card background shows through the
+  // transparent parts of the headshot.
+  ctx.save();
   ctx.beginPath();
   ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
   ctx.closePath();
@@ -98,6 +95,14 @@ function drawCircularAvatar(ctx, image, centerX, centerY, radius) {
     ctx.fillStyle = '#3a3a44';
     ctx.fillRect(centerX - radius, centerY - radius, radius * 2, radius * 2);
   }
+  ctx.restore();
+
+  // Pink outline around the avatar
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius + CARD.ringWidth / 2, 0, Math.PI * 2);
+  ctx.lineWidth = CARD.ringWidth;
+  ctx.strokeStyle = CARD.ringColor;
+  ctx.stroke();
 
   ctx.restore();
 }
@@ -115,26 +120,38 @@ function drawOutlinedText(ctx, text, x, y, { font, fill, strokeWidth = 8, align 
   ctx.fillText(text, x, y);
 }
 
+// Rounded, slightly tall hexagon (the Robux mark's outline), in the icon's
+// own 1200-unit design space. w = half width, r = corner radius.
+function robuxHexPath(ctx, w, r) {
+  const b = w * 1.215;
+  const a = b - w * 0.614;
+  const pts = [[0, -b], [w, -a], [w, a], [0, b], [-w, a], [-w, -a]];
+  ctx.moveTo((pts[5][0] + pts[0][0]) / 2, (pts[5][1] + pts[0][1]) / 2);
+  for (let i = 0; i < 6; i++) {
+    const next = pts[(i + 1) % 6];
+    ctx.arcTo(pts[i][0], pts[i][1], next[0], next[1], r);
+  }
+  ctx.closePath();
+}
+
 function drawRobuxIcon(ctx, centerX, centerY, size) {
   ctx.save();
   ctx.translate(centerX, centerY);
+  ctx.scale(size / 570, size / 570);
 
+  // Outer ring
   ctx.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const angle = (Math.PI / 3) * i - Math.PI / 2;
-    const x = size * Math.cos(angle);
-    const y = size * Math.sin(angle);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.lineWidth = size * 0.22;
+  robuxHexPath(ctx, 450, 165);
+  ctx.lineWidth = 100;
   ctx.strokeStyle = CARD.ringColor;
   ctx.stroke();
 
-  const sq = size * 0.55;
+  // Solid inner hexagon with a see-through square in the middle
+  ctx.beginPath();
+  robuxHexPath(ctx, 300, 125);
+  ctx.rect(-100, -100, 200, 200);
   ctx.fillStyle = CARD.ringColor;
-  ctx.fillRect(-sq / 2, -sq / 2, sq, sq);
+  ctx.fill('evenodd');
 
   ctx.restore();
 }
